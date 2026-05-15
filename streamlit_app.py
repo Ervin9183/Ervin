@@ -17,6 +17,16 @@ DEFAULT_END_DATE = date(2026, 12, 31)
 DEFAULT_REFRESH_SECONDS = 60
 LOCAL_TIMEZONE = "Europe/London"
 
+IC_VOLUME_COLUMNS = {
+    "VKL": "VKL Volume",
+    "EL": "EL Volume",
+    "IFA1": "IFA1 Volume",
+    "IFA2": "IFA2 Volume",
+    "NEMO": "NEMO Volume",
+    "BN": "BN Volume",
+}
+IC_ORDER = list(IC_VOLUME_COLUMNS.keys())
+
 HIDDEN_COLUMNS = {
     "Auction ID",
     "Default Price",
@@ -181,25 +191,98 @@ def latest_published_timestamp(frame: pd.DataFrame) -> pd.Timestamp | None:
     return None if pd.isna(latest) else latest
 
 
+def new_data_rows(frame: pd.DataFrame, previous_timestamp: pd.Timestamp | None) -> pd.DataFrame:
+    if previous_timestamp is None or "Published DateTime" not in frame.columns:
+        return pd.DataFrame()
+    return frame[frame["Published DateTime"] > previous_timestamp].copy()
+
+
+def alert_summary_rows(frame: pd.DataFrame) -> list[dict[str, object]]:
+    summary_rows = []
+    for _, row in frame.iterrows():
+        active_ics = []
+        for ic_name, column in IC_VOLUME_COLUMNS.items():
+            volume = row.get(column)
+            if pd.notna(volume) and float(volume) != 0:
+                active_ics.append(ic_name)
+
+        if not active_ics and pd.notna(row.get("Qualified IC")):
+            active_ics.append(str(row["Qualified IC"]))
+
+        if not active_ics:
+            active_ics.append("Unknown")
+
+        summary_rows.append(
+            {
+                "Settlement Period": row.get("Settlement Period"),
+                "Buy/Sell": row.get("Buy Sell"),
+                "IC": ", ".join(active_ics),
+                "Total Volume": row.get("Cleared Volume"),
+                "VWA Price": row.get("VWA Price"),
+                "System Flag": row.get("System Flag") if pd.notna(row.get("System Flag")) else "Unknown",
+            }
+        )
+
+    return summary_rows
+
+
 def visible_columns(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.drop(columns=[column for column in HIDDEN_COLUMNS if column in frame.columns])
 
 
+def weighted_average(values: pd.Series, weights: pd.Series) -> float | None:
+    clean_values = pd.to_numeric(values, errors="coerce")
+    clean_weights = pd.to_numeric(weights, errors="coerce").fillna(0)
+    valid = clean_values.notna() & clean_weights.gt(0)
+    if not valid.any():
+        return None
+    return float((clean_values[valid] * clean_weights[valid]).sum() / clean_weights[valid].sum())
+
+
 def current_day_chart_source(frame: pd.DataFrame) -> pd.DataFrame:
-    required_columns = {"Adjusted Start Time", "Settlement Period", "Buy Sell", "Cleared Volume"}
+    required_columns = {
+        "Adjusted Start Time",
+        "Settlement Period",
+        "Buy Sell",
+        "VWA Price",
+        *IC_VOLUME_COLUMNS.values(),
+    }
     if frame.empty or not required_columns.issubset(frame.columns):
         return pd.DataFrame()
 
     today = pd.Timestamp.now(tz=LOCAL_TIMEZONE).date()
     current_day = frame[frame["Adjusted Start Time"].dt.date == today]
-    current_day = current_day.dropna(subset=["Settlement Period", "Buy Sell", "Cleared Volume"])
+    current_day = current_day.dropna(subset=["Settlement Period", "Buy Sell"])
     if current_day.empty:
         return current_day
+    if "System Flag" not in current_day.columns:
+        current_day = current_day.assign(**{"System Flag": "Unknown"})
+    current_day["System Flag"] = current_day["System Flag"].fillna("Unknown").astype(str)
+
+    chart_source = current_day.melt(
+        id_vars=["Settlement Period", "Buy Sell", "VWA Price", "System Flag"],
+        value_vars=list(IC_VOLUME_COLUMNS.values()),
+        var_name="IC",
+        value_name="Volume",
+    )
+    chart_source["IC"] = chart_source["IC"].replace(
+        {column: ic_name for ic_name, column in IC_VOLUME_COLUMNS.items()}
+    )
+    chart_source["Volume"] = pd.to_numeric(chart_source["Volume"], errors="coerce").fillna(0)
+    chart_source = chart_source[chart_source["Volume"] != 0]
 
     return (
-        current_day.groupby(["Settlement Period", "Buy Sell"], as_index=False)["Cleared Volume"]
-        .sum()
-        .sort_values(["Settlement Period", "Buy Sell"])
+        chart_source.groupby(["Settlement Period", "Buy Sell", "IC", "System Flag"], as_index=False)
+        .apply(
+            lambda group: pd.Series(
+                {
+                    "Volume": group["Volume"].sum(),
+                    "VWA Price": weighted_average(group["VWA Price"], group["Volume"]),
+                }
+            ),
+            include_groups=False,
+        )
+        .sort_values(["Settlement Period", "Buy Sell", "IC", "System Flag"])
     )
 
 
@@ -210,16 +293,23 @@ def current_day_volume_chart(chart_source: pd.DataFrame) -> alt.Chart:
         .encode(
             x=alt.X("Settlement Period:N", title="Settlement Period", sort=None),
             xOffset=alt.XOffset("Buy Sell:N", sort=["Sell", "Buy"]),
-            y=alt.Y("Cleared Volume:Q", title="Cleared Volume", stack=None),
+            y=alt.Y("Volume:Q", title="Volume", stack="zero"),
             color=alt.Color(
-                "Buy Sell:N",
-                title="Buy/Sell",
-                scale=alt.Scale(domain=["Sell", "Buy"], range=["#F05A50", "#6BAED6"]),
+                "IC:N",
+                title="IC",
+                scale=alt.Scale(
+                    domain=IC_ORDER,
+                    range=["#1F77B4", "#FF7F0E", "#2CA02C", "#D62728", "#9467BD", "#8C564B"],
+                ),
             ),
+            order=alt.Order("IC:N", sort="ascending"),
             tooltip=[
                 alt.Tooltip("Settlement Period:N"),
                 alt.Tooltip("Buy Sell:N", title="Buy/Sell"),
-                alt.Tooltip("Cleared Volume:Q", format=",.0f"),
+                alt.Tooltip("IC:N"),
+                alt.Tooltip("Volume:Q", format=",.0f"),
+                alt.Tooltip("VWA Price:Q", format=",.2f"),
+                alt.Tooltip("System Flag:N"),
             ],
         )
         .properties(height=300)
@@ -230,9 +320,11 @@ st.set_page_config(page_title="NESO BSAD Requirements", layout="wide")
 
 
 @st.dialog("New NESO Data")
-def show_new_data_popup(latest_timestamp_text: str) -> None:
+def show_new_data_popup(latest_timestamp_text: str, summary_rows: list[dict[str, object]]) -> None:
     st.write("New data has been received from NESO.")
     st.write(f"Latest published time: {latest_timestamp_text}")
+    if summary_rows:
+        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
 
 def play_alert_sound() -> None:
@@ -316,9 +408,10 @@ previous_timestamp = st.session_state.get("latest_published_timestamp")
 if latest_timestamp is not None:
     if previous_timestamp is not None and latest_timestamp > previous_timestamp:
         latest_timestamp_text = latest_timestamp.strftime("%Y-%m-%d %H:%M:%S %Z")
+        alert_rows = alert_summary_rows(new_data_rows(data, previous_timestamp))
         st.toast("New NESO data received.")
         play_alert_sound()
-        show_new_data_popup(latest_timestamp_text)
+        show_new_data_popup(latest_timestamp_text, alert_rows)
     st.session_state["latest_published_timestamp"] = latest_timestamp
 
 with st.sidebar:
