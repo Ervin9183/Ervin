@@ -11,6 +11,13 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+## Deploy
+
+For Streamlit Community Cloud, deploy this repository with:
+
+- Main file path: `Constraint Query/app.py`
+- Python dependencies: `Constraint Query/requirements.txt`
+
 The app reads the live NESO CSV directly. The extractor is only kept for
 regenerating optional local support files from the workbook, such as the default
 group list and map image:
