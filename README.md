@@ -1,32 +1,8 @@
-# NESO BSAD Requirements Streamlit App
+# Constraint Query Streamlit App
 
-This Streamlit app replaces the Excel Power Query in `bsad_requirements-8_traderNESO - Copy.xlsx`.
-
-The Excel query was pulling from the NESO CKAN SQL endpoint:
-
-`https://api.neso.energy/api/3/action/datastore_search_sql`
-
-Resource:
-
-`6a928369-bed3-445f-af8a-69cdb2cc5089`
-
-## What It Does
-
-- Fetches published BSAD requirement rows from the NESO API.
-- Caches API results between refreshes to avoid repeated slow requests.
-- Checks for new records every 60 seconds and shows an in-app alert when a newer
-  `Published DateTime` appears.
-- Recreates the Excel Power Query transformations:
-  - parses date/time columns
-  - calculates `IsBST`
-  - adds `Adjusted Start Time`
-  - calculates `Settlement Period`
-  - sorts by `Start Time` descending
-- Adds sidebar filters for date range, row limit, buy/sell, and settlement period.
-- Hides unrelated workbook columns from the table and CSV export.
-- Keeps the chart focused on current-day cleared volume by settlement period,
-  split by buy/sell.
-- Provides a CSV download of the filtered data.
+This app converts the workbook's live NESO `Constraint_boundary` Power Query
+and `DA` `MINIFS` view into Streamlit. It refreshes from the live NESO CSV used
+by the workbook query and caches that result for 15 minutes.
 
 ## Run Locally
 
@@ -35,4 +11,13 @@ pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
-The default date range matches the workbook query: `2025-05-01` to `2026-12-31`, with a default API limit of `100` rows.
+## Deploy
+
+For Streamlit Community Cloud, deploy this repository with:
+
+- Branch: `codex/BSAD`
+- Main file path: `streamlit_app.py`
+- Python dependencies: `requirements.txt`
+
+The app reads the live NESO CSV directly. The `Constraint Query/` folder keeps
+the source app copy, default group list, map image, and workbook extractor.
