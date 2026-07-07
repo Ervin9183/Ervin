@@ -518,7 +518,7 @@ with st.sidebar:
         step=50,
     )
     popup_alert_enabled = st.checkbox("Show popup alert", value=True)
-    alert_sound_enabled = st.checkbox("Play alert sound", value=False)
+    alert_sound_enabled = st.checkbox("Play alert sound", value=True)
 
     if st.button("Refresh data", use_container_width=True):
         fetch_data.clear()
