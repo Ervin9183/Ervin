@@ -7,6 +7,7 @@ import pandas as pd
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
+from streamlit_autorefresh import st_autorefresh
 
 
 API_URL = "https://api.neso.energy/api/3/action/datastore_search_sql"
@@ -181,19 +182,6 @@ def latest_published_timestamp(frame: pd.DataFrame) -> pd.Timestamp | None:
         return None
     latest = frame["Published DateTime"].max()
     return None if pd.isna(latest) else latest
-
-
-def previous_published_timestamp() -> pd.Timestamp | None:
-    previous_timestamp = st.session_state.get("latest_published_timestamp")
-    if previous_timestamp is not None:
-        return previous_timestamp
-
-    previous_timestamp_text = st.query_params.get("latest_published_timestamp")
-    if not previous_timestamp_text:
-        return None
-
-    previous_timestamp = pd.to_datetime(previous_timestamp_text, errors="coerce", utc=True)
-    return None if pd.isna(previous_timestamp) else previous_timestamp
 
 
 def latest_records(frame: pd.DataFrame, latest_timestamp: pd.Timestamp) -> pd.DataFrame:
@@ -505,21 +493,12 @@ def play_alert_sound() -> None:
     )
 
 
-def enable_auto_refresh(interval_seconds: int) -> None:
-    components.html(
-        f"""
-        <script>
-        window.setTimeout(() => {{
-            window.parent.location.reload();
-        }}, {interval_seconds * 1000});
-        </script>
-        """,
-        height=0,
-    )
-
-
-enable_auto_refresh(DEFAULT_REFRESH_SECONDS)
-fetch_data.clear()
+refresh_count = st_autorefresh(
+    interval=DEFAULT_REFRESH_SECONDS * 1000,
+    key="neso_data_refresh",
+)
+if refresh_count:
+    fetch_data.clear()
 
 st.title("NESO BSAD Requirements")
 
@@ -562,7 +541,7 @@ except Exception as exc:
     st.stop()
 
 latest_timestamp = latest_published_timestamp(data)
-previous_timestamp = previous_published_timestamp()
+previous_timestamp = st.session_state.get("latest_published_timestamp")
 if latest_timestamp is not None:
     if previous_timestamp is not None and latest_timestamp > previous_timestamp:
         latest_timestamp_text = _format_local_timestamp(latest_timestamp)
@@ -580,7 +559,6 @@ if latest_timestamp is not None:
             interconnector_message,
         )
     st.session_state["latest_published_timestamp"] = latest_timestamp
-    st.query_params["latest_published_timestamp"] = latest_timestamp.isoformat()
 
 with st.sidebar:
     buy_sell_options = sorted(data["Buy Sell"].dropna().unique()) if "Buy Sell" in data else []
