@@ -191,7 +191,9 @@ def latest_records(frame: pd.DataFrame, latest_timestamp: pd.Timestamp) -> pd.Da
 
 
 def volume_price_confirmation(records: pd.DataFrame) -> tuple[bool, str, pd.DataFrame]:
-    empty_summary = pd.DataFrame(columns=["Settlement Period", "Cleared Volume", "VWAP"])
+    empty_summary = pd.DataFrame(
+        columns=["Settlement Period", "Buy Sell", "Cleared Volume", "VWAP"]
+    )
 
     required_columns = {"Settlement Period", "Cleared Volume"}
     if records.empty or not required_columns.issubset(records.columns):
@@ -212,7 +214,14 @@ def volume_price_confirmation(records: pd.DataFrame) -> tuple[bool, str, pd.Data
     if not confirmed_rows.all():
         return False, "Volume and price are not confirmed yet.", empty_summary
 
-    summary_source = records[["Settlement Period", "Cleared Volume", price_column]].copy()
+    summary_columns = ["Settlement Period", "Cleared Volume", price_column]
+    if "Buy Sell" in records.columns:
+        summary_columns.insert(1, "Buy Sell")
+
+    summary_source = records[summary_columns].copy()
+    if "Buy Sell" not in summary_source.columns:
+        summary_source["Buy Sell"] = "Unknown"
+
     summary_source["Cleared Volume"] = pd.to_numeric(
         summary_source["Cleared Volume"],
         errors="coerce",
@@ -224,26 +233,27 @@ def volume_price_confirmation(records: pd.DataFrame) -> tuple[bool, str, pd.Data
 
     positive_volume = summary_source["Cleared Volume"] > 0
     weighted_source = summary_source[positive_volume].copy()
+    group_columns = ["Settlement Period", "Buy Sell"]
     if weighted_source.empty:
         summary = (
-            summary_source.groupby("Settlement Period", as_index=False)
+            summary_source.groupby(group_columns, as_index=False)
             .agg(**{"Cleared Volume": ("Cleared Volume", "sum"), "VWAP": (price_column, "mean")})
         )
     else:
         weighted_source["Weighted Price"] = (
             weighted_source["Cleared Volume"] * weighted_source[price_column]
         )
-        summary = weighted_source.groupby("Settlement Period", as_index=False).agg(
+        summary = weighted_source.groupby(group_columns, as_index=False).agg(
             **{
                 "Cleared Volume": ("Cleared Volume", "sum"),
                 "Weighted Price": ("Weighted Price", "sum"),
             }
         )
         summary["VWAP"] = summary["Weighted Price"] / summary["Cleared Volume"]
-        summary = summary[["Settlement Period", "Cleared Volume", "VWAP"]]
+        summary = summary[group_columns + ["Cleared Volume", "VWAP"]]
 
-    summary = summary.sort_values("Settlement Period").reset_index(drop=True)
-    return True, "Volume and price are confirmed by settlement period.", summary
+    summary = summary.sort_values(["Settlement Period", "Buy Sell"]).reset_index(drop=True)
+    return True, "Volume and price are confirmed by settlement period and direction.", summary
 
 
 def interconnector_procurement_message(records: pd.DataFrame) -> str:
@@ -256,20 +266,39 @@ def interconnector_procurement_message(records: pd.DataFrame) -> str:
     if not available_columns:
         return "No interconnector procurement has been confirmed yet."
 
+    direction_source = records.copy()
+    if "Buy Sell" not in direction_source.columns:
+        direction_source["Buy Sell"] = "Unknown"
+
     interconnector_totals = {}
     for column in available_columns:
-        volume = pd.to_numeric(records[column], errors="coerce").fillna(0).sum()
-        if volume != 0:
-            interconnector_totals[INTERCONNECTOR_VOLUME_COLUMNS[column]] = volume
+        direction_source[column] = pd.to_numeric(
+            direction_source[column],
+            errors="coerce",
+        ).fillna(0)
+        grouped_volumes = direction_source.groupby("Buy Sell")[column].sum()
+        for direction, volume in grouped_volumes.items():
+            if volume != 0:
+                interconnector_totals.setdefault(direction, {})[
+                    INTERCONNECTOR_VOLUME_COLUMNS[column]
+                ] = volume
 
     if not interconnector_totals:
         return "No interconnector procurement has been confirmed yet."
 
-    interconnector_details = ", ".join(
-        f"{interconnector}: {volume:,.0f}"
-        for interconnector, volume in interconnector_totals.items()
+    direction_details = []
+    for direction in sorted(interconnector_totals):
+        interconnector_details = ", ".join(
+            f"{interconnector}: {volume:,.0f}"
+            for interconnector, volume in interconnector_totals[direction].items()
+        )
+        direction_details.append(f"{direction} - {interconnector_details}")
+
+    return (
+        "Procurement by direction and interconnector: "
+        + "; ".join(direction_details)
+        + "."
     )
-    return f"Procurement by interconnector: {interconnector_details}."
 
 
 def visible_columns(frame: pd.DataFrame) -> pd.DataFrame:
