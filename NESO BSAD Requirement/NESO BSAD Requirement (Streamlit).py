@@ -517,6 +517,7 @@ with st.sidebar:
         value=DEFAULT_ROW_LIMIT,
         step=50,
     )
+    popup_alert_enabled = st.checkbox("Show popup alert", value=True)
     alert_sound_enabled = st.checkbox("Play alert sound", value=False)
 
     if st.button("Refresh data", use_container_width=True):
@@ -555,12 +556,13 @@ if latest_timestamp is not None:
         st.toast("New NESO data received.")
         if alert_sound_enabled:
             play_alert_sound()
-        show_new_data_popup(
-            latest_timestamp_text,
-            confirmation_message,
-            settlement_period_summary,
-            interconnector_message,
-        )
+        if popup_alert_enabled:
+            show_new_data_popup(
+                latest_timestamp_text,
+                confirmation_message,
+                settlement_period_summary,
+                interconnector_message,
+            )
     st.session_state["latest_published_timestamp"] = latest_timestamp
 
 with st.sidebar:
